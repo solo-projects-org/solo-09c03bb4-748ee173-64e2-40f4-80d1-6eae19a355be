@@ -40,10 +40,18 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
+from app import photometry
+
 APP_DIR = Path(__file__).resolve().parent
 WORKER_PY = APP_DIR / "worker.py"
 INDEX_HTML = APP_DIR / "static" / "index.html"
 SAMPLE_CSV = APP_DIR.parent / "sample" / "sample_star.csv"
+SAMPLE_DIR = APP_DIR.parent / "sample"
+FITS_SAMPLES = {
+    "neighbor": SAMPLE_DIR / "photometry_neighbor.zip",
+    "neighbor_narrow": SAMPLE_DIR / "photometry_neighbor.zip",
+    "loss": SAMPLE_DIR / "photometry_loss.zip",
+}
 
 N_FREQ = 10_000          # 频率网格点数
 N_PERM = 200             # 置换检验次数
@@ -52,11 +60,15 @@ MAX_PARALLEL_JOBS = 2    # 最多并行批数
 MIN_ROWS = 10            # CSV 最少行数
 MAX_ROWS = 50_000        # CSV 最多行数(防御性上限)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_FITS_ZIP_BYTES = 200 * 1024 * 1024
+MAX_PARALLEL_PHOTOMETRY = 2
+MAX_KEPT_PHOTOMETRY = 32
 MAX_KEPT_JOBS = 64       # 内存中最多保留的任务记录数
 TERMINAL_STATES = ("done", "failed", "cancelled")
 
 # 全部任务状态只存内存
 JOBS: dict[str, "Job"] = {}
+PHOTO_JOBS: dict[str, "PhotoJob"] = {}
 
 
 class Job:
@@ -354,6 +366,150 @@ def _evict_old_jobs() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 测光任务:ZIP 上传 → 逐帧孔径测光 → 可送入周期筛查的序列
+# --------------------------------------------------------------------------- #
+
+class PhotoJob:
+    """一次 FITS 测光任务的全部内存态。"""
+
+    def __init__(self, filename: str, params: dict) -> None:
+        self.id = uuid.uuid4().hex[:12]
+        self.state = "running"      # running / done / failed
+        self.created_at = time.time()
+        self.finished_at: float | None = None
+        self.filename = filename
+        self.params = params
+        self.error: str | None = None
+        self.result: dict | None = None
+        self.source_zip: bytes | None = None
+
+    def summary(self) -> dict:
+        d = {
+            "photometry_id": self.id,
+            "state": self.state,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "filename": self.filename,
+            "params": self.params,
+            "error": self.error,
+        }
+        if self.result is not None:
+            r = self.result
+            d.update({
+                "n_frames": r["n_frames"],
+                "n_valid": r["n_valid"],
+                "n_bad": r["n_bad"],
+                "sequence_available": r["sequence_available"],
+                "sequence_error": r["sequence_error"],
+                "reason_counts": r["reason_counts"],
+                "image_width": r["image_width"],
+                "image_height": r["image_height"],
+            })
+        return d
+
+    def detail(self) -> dict:
+        d = self.summary()
+        if self.result is not None:
+            d["frames"] = self.result["frames"]
+            d["bad_frames"] = self.result["bad_frames"]
+        return d
+
+
+def _parse_photometry_params(form: dict) -> dict:
+    keys = ("x", "y", "aperture_radius", "bg_inner_radius",
+            "bg_outer_radius", "max_shift")
+    params: dict = {}
+    for key in keys:
+        raw = form.get(key)
+        if raw is None:
+            raise HTTPException(400, f"缺少参数 {key}")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"参数 {key} 必须为数值")
+        params[key] = value
+    try:
+        photometry.validate_params(
+            params["x"], params["y"], params["aperture_radius"],
+            params["bg_inner_radius"], params["bg_outer_radius"],
+            params["max_shift"])
+    except photometry.PhotometryInputError as exc:
+        raise HTTPException(400, str(exc))
+    return params
+
+
+def _evict_photo_jobs() -> None:
+    if len(PHOTO_JOBS) <= MAX_KEPT_PHOTOMETRY:
+        return
+    terminal = sorted((j for j in PHOTO_JOBS.values() if j.state != "running"),
+                      key=lambda j: j.created_at)
+    for j in terminal[: len(PHOTO_JOBS) - MAX_KEPT_PHOTOMETRY]:
+        PHOTO_JOBS.pop(j.id, None)
+
+
+async def run_photometry(job: "PhotoJob") -> None:
+    """在线程池中跑测光,避免阻塞事件循环;完成后才公布结局并释放名额。"""
+    params = job.params
+    try:
+        frameset = await asyncio.to_thread(photometry.load_zip,
+                                           job.source_zip or b"")
+        result = await asyncio.to_thread(
+            frameset.process,
+            params["x"], params["y"], params["aperture_radius"],
+            params["bg_inner_radius"], params["bg_outer_radius"],
+            params["max_shift"])
+        job.result = result
+        job.state = "done"
+    except photometry.PhotometryInputError as exc:
+        job.error = str(exc)
+        job.state = "failed"
+    except Exception as exc:  # 兜底,不让单个任务拖垮服务
+        job.error = f"内部错误:{exc}"
+        job.state = "failed"
+    finally:
+        job.source_zip = None
+        job.finished_at = time.time()
+
+
+async def handle_photometry_upload(file: UploadFile, form: dict) -> dict:
+    params = _parse_photometry_params(form)
+
+    raw = await file.read(MAX_FITS_ZIP_BYTES + 1)
+    if len(raw) > MAX_FITS_ZIP_BYTES:
+        raise HTTPException(400, "ZIP 文件过大")
+    if not raw.startswith(b"PK\x03\x04"):
+        raise HTTPException(400, "上传内容不是 ZIP 文件(需以 PK 开头)")
+
+    # 检查与登记之间不得有 await,保证名额计数在单事件循环内无竞态
+    running = sum(1 for j in PHOTO_JOBS.values() if j.state == "running")
+    if running >= MAX_PARALLEL_PHOTOMETRY:
+        raise HTTPException(429, "已有两批测光正在处理,请稍后再试")
+
+    job = PhotoJob(filename=file.filename or "frames.zip", params=params)
+    job.source_zip = raw
+    PHOTO_JOBS[job.id] = job
+    _evict_photo_jobs()
+    asyncio.ensure_future(run_photometry(job))
+    return {"photometry_id": job.id, "state": job.state}
+
+
+def _photometry_or_404(photo_id: str) -> "PhotoJob":
+    job = PHOTO_JOBS.get(photo_id)
+    if job is None:
+        raise HTTPException(404, "测光任务不存在")
+    return job
+
+
+def _sequence_csv_bytes(job: "PhotoJob") -> bytes:
+    if job.state != "done" or job.result is None:
+        raise HTTPException(409, "测光尚未完成")
+    if not job.result["sequence_available"]:
+        raise HTTPException(409, job.result["sequence_error"]
+                            or "没有可用的光变序列")
+    return job.result["csv"].encode("utf-8")
+
+
+# --------------------------------------------------------------------------- #
 # HTTP 接口
 # --------------------------------------------------------------------------- #
 
@@ -371,6 +527,104 @@ async def sample_csv() -> FileResponse:
         raise HTTPException(404, "样例文件不存在")
     return FileResponse(SAMPLE_CSV, media_type="text/csv",
                         filename="sample_star.csv")
+
+
+# --------------------------------------------------------------------------- #
+# 测光接口
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/photometry/sample/{name}.zip")
+async def photometry_sample(name: str) -> FileResponse:
+    path = FITS_SAMPLES.get(name)
+    if path is None or not path.exists():
+        raise HTTPException(404, "样例 FITS ZIP 不存在")
+    return FileResponse(path, media_type="application/zip",
+                        filename=path.name)
+
+
+@app.get("/api/photometry/samples")
+async def photometry_samples() -> dict:
+    return {"samples": [
+        {"name": "neighbor", "file": "photometry_neighbor.zip",
+         "label": "邻星干扰(两可信位置)",
+         "params": {"x": 60, "y": 62, "aperture_radius": 4,
+                    "bg_inner_radius": 8, "bg_outer_radius": 12,
+                    "max_shift": 10}},
+        {"name": "loss", "file": "photometry_loss.zip",
+         "label": "短时丢失(跳过坏帧继续跟踪)",
+         "params": {"x": 60, "y": 62, "aperture_radius": 4,
+                    "bg_inner_radius": 8, "bg_outer_radius": 12,
+                    "max_shift": 10}},
+        {"name": "neighbor_narrow", "file": "photometry_neighbor.zip",
+         "label": "邻星干扰 · 收窄搜索半径",
+         "params": {"x": 60, "y": 62, "aperture_radius": 3,
+                    "bg_inner_radius": 5, "bg_outer_radius": 8,
+                    "max_shift": 4}},
+    ]}
+
+
+@app.post("/api/photometry", status_code=201)
+async def create_photometry(
+        file: UploadFile = File(...),
+        x: str = Form(...), y: str = Form(...),
+        aperture_radius: str = Form(...),
+        bg_inner_radius: str = Form(...),
+        bg_outer_radius: str = Form(...),
+        max_shift: str = Form(...)) -> dict:
+    form = {"x": x, "y": y, "aperture_radius": aperture_radius,
+            "bg_inner_radius": bg_inner_radius,
+            "bg_outer_radius": bg_outer_radius, "max_shift": max_shift}
+    return await handle_photometry_upload(file, form)
+
+
+@app.get("/api/photometry")
+async def list_photometry() -> dict:
+    running = sum(1 for j in PHOTO_JOBS.values() if j.state == "running")
+    jobs = sorted(PHOTO_JOBS.values(), key=lambda j: j.created_at,
+                  reverse=True)
+    return {"running": running, "max_parallel": MAX_PARALLEL_PHOTOMETRY,
+            "jobs": [j.summary() for j in jobs]}
+
+
+@app.get("/api/photometry/{photo_id}")
+async def get_photometry(photo_id: str) -> dict:
+    return _photometry_or_404(photo_id).detail()
+
+
+@app.get("/api/photometry/{photo_id}/sequence.csv")
+async def photometry_sequence_csv(photo_id: str) -> Response:
+    job = _photometry_or_404(photo_id)
+    payload = _sequence_csv_bytes(job)
+    return Response(content=payload, media_type="text/csv", headers={
+        "Content-Disposition":
+            f'attachment; filename="photometry_{job.id}_time_day_flux.csv"'})
+
+
+@app.post("/api/photometry/{photo_id}/send-to-period", status_code=201)
+async def send_to_period(photo_id: str,
+                         period_min: float = Form(...),
+                         period_max: float = Form(...)) -> dict:
+    """把测光序列直接送入现有周期筛查入口,返回新建的周期任务。"""
+    validate_period_range(period_min, period_max)
+    job = _photometry_or_404(photo_id)
+    payload = _sequence_csv_bytes(job)
+
+    running = sum(1 for j in JOBS.values() if j.state == "running")
+    if running >= MAX_PARALLEL_JOBS:
+        raise HTTPException(429, "已有两批周期筛查正在计算,请稍后再试")
+
+    t, y = validate_csv(payload)
+    period_job = Job(period_min=period_min, period_max=period_max,
+                     n_rows=len(t),
+                     filename=f"photometry_{job.id}.csv")
+    np.savetxt(period_job.tmpdir / "input.csv", np.column_stack([t, y]),
+               delimiter=",", header="time_day,flux", comments="",
+               fmt="%.10g")
+    JOBS[period_job.id] = period_job
+    _evict_old_jobs()
+    asyncio.ensure_future(run_job(period_job))
+    return {"job_id": period_job.id, "state": period_job.state,
+            "source_photometry_id": job.id}
 
 
 @app.post("/api/jobs", status_code=201)

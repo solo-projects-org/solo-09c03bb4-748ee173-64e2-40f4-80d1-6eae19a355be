@@ -3,47 +3,52 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>周期变星候选筛选 · Lomb–Scargle</title>
+<title>巡测测光 + 周期变星候选筛选</title>
 <style>
-  :root { --blue:#1f5fa8; --red:#c0392b; --green:#1e8449; --gray:#666; }
+  :root { --blue:#1f5fa8; --red:#c0392b; --green:#1e8449; --gray:#666;
+          --amber:#b9770e; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
          background:#f4f6f9; color:#222; }
   header { background:linear-gradient(135deg,#163a5f,#1f5fa8); color:#fff;
            padding:22px 28px; }
   header h1 { margin:0 0 6px; font-size:22px; }
-  header p { margin:0; font-size:13px; opacity:.88; max-width:900px; line-height:1.6; }
-  main { max-width:1080px; margin:22px auto; padding:0 16px 40px; }
+  header p { margin:0; font-size:13px; opacity:.88; max-width:960px; line-height:1.6; }
+  main { max-width:1160px; margin:22px auto; padding:0 16px 40px; }
   .card { background:#fff; border:1px solid #e2e7ee; border-radius:10px;
           padding:18px 20px; margin-bottom:18px; box-shadow:0 1px 3px rgba(20,40,70,.06); }
   .card h2 { margin:0 0 14px; font-size:16px; color:#163a5f; }
-  form { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+  h3 { font-size:14px; color:#163a5f; margin:18px 0 8px; }
+  form.inline { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
   label { display:flex; flex-direction:column; font-size:13px; color:#444; gap:4px; }
   input[type=file], input[type=number] { padding:7px 9px; border:1px solid #c9d2de;
     border-radius:6px; font-size:13px; background:#fbfcfe; }
-  input[type=number] { width:130px; }
+  input[type=number] { width:118px; }
   button { padding:8px 16px; border:0; border-radius:6px; font-size:13px;
            cursor:pointer; background:var(--blue); color:#fff; }
   button.secondary { background:#5d6d7e; }
   button.danger { background:var(--red); }
   button:disabled { background:#aab4c0; cursor:not-allowed; }
-  .hint { font-size:12px; color:var(--gray); margin:10px 0 0; line-height:1.7; }
-  #msg { margin-top:10px; font-size:13px; min-height:18px; }
-  #msg.err { color:var(--red); } #msg.ok { color:var(--green); }
+  .hint { font-size:12px; color:var(--gray); margin:10px 0 0; line-height:1.75; }
+  #msg, #photoMsg { margin-top:10px; font-size:13px; min-height:18px; }
+  .err-text { color:var(--red); } .ok-text { color:var(--green); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #edf0f5; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid #edf0f5;
+           vertical-align:top; }
   th { color:#556; font-weight:600; background:#f8fafc; }
   .badge { display:inline-block; padding:2px 10px; border-radius:12px;
-           font-size:12px; color:#fff; }
-  .st-running   { background:#b9770e; }
+           font-size:12px; color:#fff; white-space:nowrap; }
+  .st-running   { background:var(--amber); }
   .st-done      { background:var(--green); }
   .st-failed    { background:var(--red); }
   .st-cancelled { background:#5d6d7e; }
+  .st-ok        { background:var(--green); }
+  .st-bad       { background:var(--red); }
   .mono { font-family:ui-monospace,Consolas,monospace; }
-  #slots { font-size:12px; color:var(--gray); margin-bottom:8px; }
+  #slots, #photoSlots { font-size:12px; color:var(--gray); margin-bottom:8px; }
   .metrics { display:flex; flex-wrap:wrap; gap:14px; margin:6px 0 14px; }
   .metric { background:#f4f8fd; border:1px solid #dbe7f5; border-radius:8px;
-            padding:10px 16px; min-width:150px; }
+            padding:10px 16px; min-width:130px; }
   .metric .k { font-size:12px; color:var(--gray); }
   .metric .v { font-size:18px; font-weight:600; color:#163a5f; margin-top:2px; }
   .plots { display:flex; flex-wrap:wrap; gap:16px; }
@@ -54,21 +59,98 @@
   .errbox { background:#fdf0ee; border:1px solid #f2c7c0; color:#8f2d20;
             border-radius:8px; padding:10px 14px; font-size:13px;
             white-space:pre-wrap; }
+  .okbox { background:#eef8f1; border:1px solid #bfe3cb; color:#1e6b3a;
+           border-radius:8px; padding:10px 14px; font-size:13px; }
+  .warnbox { background:#fdf6e7; border:1px solid #f0d9a8; color:#7a5300;
+             border-radius:8px; padding:10px 14px; font-size:13px; line-height:1.7; }
   .row-actions button { margin-right:6px; padding:5px 10px; font-size:12px; }
+  .scroll { max-height:420px; overflow:auto; border:1px solid #edf0f5;
+            border-radius:8px; }
+  .small { font-size:12px; color:var(--gray); }
+  .nowrap { white-space:nowrap; }
+  a.download { display:inline-block; padding:8px 16px; border-radius:6px;
+               background:var(--green); color:#fff; font-size:13px;
+               text-decoration:none; }
 </style>
 </head>
 <body>
 <header>
-  <h1>周期变星候选筛选</h1>
-  <p>上传单颗星的测光序列(CSV,含 time_day、flux 两列),系统以带浮动均值的
-     Lomb–Scargle 周期图在指定周期范围内搜索信号,展示最高峰周期、功率谱与
-     相位折叠散点,并通过 200 次通量置换估计尾概率,供人工复核。</p>
+  <h1>巡测测光 · 周期变星候选筛选</h1>
+  <p>第一步:上传连续曝光的二维 FITS 帧 ZIP,按首帧目标坐标做孔径测光,
+     得到 time_day、flux 光变序列;第二步:把序列送入带浮动均值的
+     Lomb–Scargle 周期筛查(10000 个频率点 + 200 次置换尾概率)。
+     逐帧显示可信/坏帧原因,坏帧不会中断后续跟踪。</p>
 </header>
 <main>
+
   <section class="card">
-    <h2>提交新批</h2>
-    <form id="submitForm">
-      <label>测光 CSV 文件
+    <h2>① FITS 测光:上传帧 ZIP</h2>
+    <form id="photoForm" class="inline">
+      <label>FITS 帧 ZIP(10～30 个同尺寸二维 FITS)
+        <input type="file" name="file" accept=".zip,application/zip" required>
+      </label>
+      <label>首帧目标 x(列,从 0 起)
+        <input type="number" name="x" step="any" value="60" required>
+      </label>
+      <label>首帧目标 y(行,从 0 起)
+        <input type="number" name="y" step="any" value="62" required>
+      </label>
+      <label>孔径半径(像素)
+        <input type="number" name="aperture_radius" step="any" min="0" value="4" required>
+      </label>
+      <label>背景环内半径
+        <input type="number" name="bg_inner_radius" step="any" min="0" value="8" required>
+      </label>
+      <label>背景环外半径
+        <input type="number" name="bg_outer_radius" step="any" min="0" value="12" required>
+      </label>
+      <label>允许帧间位移(像素)
+        <input type="number" name="max_shift" step="any" min="0" value="10" required>
+      </label>
+      <button type="submit">测光</button>
+    </form>
+    <div style="margin-top:12px; display:flex; flex-wrap:wrap; gap:8px;">
+      <button type="button" class="secondary sample" data-sample="loss">载入样例:短时丢失</button>
+      <button type="button" class="secondary sample" data-sample="neighbor">载入样例:邻星干扰</button>
+      <button type="button" class="secondary sample" data-sample="neighbor_narrow">邻星干扰 · 收窄搜索半径</button>
+    </div>
+    <div id="photoMsg"></div>
+    <p class="hint">帧头必须含 MJD-OBS(曝光起点)与 EXPTIME(秒);按曝光中点
+       <span class="mono">MJD-OBS + EXPTIME/2/86400</span> 升序处理。
+       通量 = 孔径内像素总量 − 背景环中位数 × 孔径有效像素数。
+       目标丢失、出现两个可信位置或孔径/背景环越界时,该帧记坏并列出原因,
+       下一帧从最后一个可信位置继续;邻星不会被当成目标。
+       有效帧少于 10 帧或有效帧时刻重复时不提供序列。</p>
+    <div class="warnbox" style="margin-top:10px;">
+      样例说明:<strong>邻星干扰</strong>样例中邻星距目标 8 像素,在允许位移 10
+      像素内,每帧都会出现两个可信位置,因此逐帧说明原因且不提供序列;
+      <strong>收窄搜索半径</strong>把允许位移改为 4 像素即可隔离邻星并得到序列。
+      <strong>短时丢失</strong>样例第 9～11 帧目标消失,坏帧之后仍从最后可信位置
+      继续跟踪,得到 21 帧有效序列。
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>测光任务列表</h2>
+    <div id="photoSlots"></div>
+    <table>
+      <thead><tr>
+        <th>ID</th><th>文件</th><th>帧数(有效/坏)</th>
+        <th>提交时间</th><th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody id="photoRows"><tr><td colspan="6">暂无测光任务</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="photoDetailCard" hidden>
+    <h2>测光详情 <span class="mono" id="pId"></span></h2>
+    <div id="pBody"></div>
+  </section>
+
+  <section class="card">
+    <h2>② 周期筛查:提交 CSV 序列</h2>
+    <form id="submitForm" class="inline">
+      <label>测光 CSV 文件(time_day、flux)
         <input type="file" name="file" accept=".csv,text/csv" required>
       </label>
       <label>周期下限(天)
@@ -87,7 +169,7 @@
   </section>
 
   <section class="card">
-    <h2>批处理列表</h2>
+    <h2>周期筛查批处理列表</h2>
     <div id="slots"></div>
     <table>
       <thead><tr>
@@ -108,55 +190,290 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let selectedPhoto = null;
 let selectedJob = null;
+let lastPhotoSig = null;
 let lastDetailSig = null;
 
-function showMsg(text, ok) {
-  const m = $("msg");
-  m.textContent = text;
-  m.className = ok ? "ok" : "err";
+function setMsg(el, text, ok) {
+  el.textContent = text;
+  el.className = ok ? "ok-text" : "err-text";
 }
 
 async function parseError(resp) {
   try {
     const j = await resp.json();
-    return j.detail || ("HTTP " + resp.status);
+    const d = j.detail;
+    return typeof d === "string" ? d : JSON.stringify(d);
   } catch (e) { return "HTTP " + resp.status; }
 }
 
+function fmtTime(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : "—";
+}
+function fmtNum(v, digits) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  return Number(v).toFixed(digits);
+}
+
+/* ---------------- FITS 测光 ---------------- */
+
+let samplesConfig = null;
+async function getSamples() {
+  if (samplesConfig) return samplesConfig;
+  const r = await fetch("/api/photometry/samples");
+  if (!r.ok) throw new Error("样例配置获取失败");
+  samplesConfig = await r.json();
+  return samplesConfig;
+}
+
+$("photoForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  await submitPhoto(new FormData(ev.target));
+});
+
+document.querySelectorAll("button.sample").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    try {
+      const cfg = await getSamples();
+      const s = cfg.samples.find((x) => x.name === btn.dataset.sample);
+      if (!s) { setMsg($("photoMsg"), "样例配置不存在", false); return; }
+      const resp = await fetch(`/api/photometry/sample/${s.name}.zip`);
+      if (!resp.ok) { setMsg($("photoMsg"), "样例获取失败", false); return; }
+      const blob = await resp.blob();
+      const fd = new FormData();
+      fd.append("file", new File([blob], s.file, { type: "application/zip" }));
+      fd.append("x", s.params.x);
+      fd.append("y", s.params.y);
+      fd.append("aperture_radius", s.params.aperture_radius);
+      fd.append("bg_inner_radius", s.params.bg_inner_radius);
+      fd.append("bg_outer_radius", s.params.bg_outer_radius);
+      fd.append("max_shift", s.params.max_shift);
+      // 同步表单显示,便于用户看到所用参数
+      const form = $("photoForm");
+      form.x.value = s.params.x; form.y.value = s.params.y;
+      form.aperture_radius.value = s.params.aperture_radius;
+      form.bg_inner_radius.value = s.params.bg_inner_radius;
+      form.bg_outer_radius.value = s.params.bg_outer_radius;
+      form.max_shift.value = s.params.max_shift;
+      await submitPhoto(fd, s.label);
+    } catch (e) {
+      setMsg($("photoMsg"), "样例提交失败:" + e, false);
+    }
+  });
+});
+
+async function submitPhoto(fd, label) {
+  setMsg($("photoMsg"), "提交中……", true);
+  const resp = await fetch("/api/photometry", { method: "POST", body: fd });
+  if (!resp.ok) {
+    setMsg($("photoMsg"), "提交失败:" + await parseError(resp), false);
+    return;
+  }
+  const j = await resp.json();
+  setMsg($("photoMsg"), `已受理${label ? "(" + label + ")" : ""},测光任务 ${j.photometry_id}`, true);
+  selectedPhoto = j.photometry_id;
+  lastPhotoSig = null;
+  refreshPhotometry();
+}
+
+function photoSig(j) {
+  return [j.photometry_id, j.state, j.finished_at || "",
+          j.n_valid, j.sequence_available].join("|");
+}
+
+async function refreshPhotometry() {
+  let data;
+  try { data = await (await fetch("/api/photometry")).json(); }
+  catch (e) { return; }
+  $("photoSlots").textContent =
+    `测光并行名额:${data.running}/${data.max_parallel} 占用中`;
+  const tbody = $("photoRows");
+  if (!data.jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="6">暂无测光任务</td></tr>';
+  } else {
+    tbody.innerHTML = "";
+    for (const j of data.jobs) {
+      const tr = document.createElement("tr");
+      const counts = (j.n_frames === undefined) ? "—"
+        : `${j.n_valid} / ${j.n_bad}`;
+      const stateText = j.state === "done" && j.sequence_available === false
+        ? "无序列" : (STATE_TEXT[j.state] || j.state);
+      tr.innerHTML =
+        `<td class="mono">${j.photometry_id}</td>` +
+        `<td>${esc(j.filename)}</td>` +
+        `<td class="nowrap">${counts}</td>` +
+        `<td>${fmtTime(j.created_at)}</td>` +
+        `<td><span class="badge st-${j.state}">${esc(stateText)}</span></td>`;
+      const td = document.createElement("td");
+      td.className = "row-actions";
+      const viewBtn = document.createElement("button");
+      viewBtn.textContent = "查看";
+      viewBtn.onclick = () => { selectedPhoto = j.photometry_id;
+                                lastPhotoSig = null; renderPhotoDetail(); };
+      td.appendChild(viewBtn);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+  }
+  if (selectedPhoto) renderPhotoDetail();
+}
+
+function reasonText(frame) {
+  if (frame.status === "ok") return "—";
+  return frame.reason || "未知原因";
+}
+
+async function renderPhotoDetail() {
+  const card = $("photoDetailCard");
+  let j;
+  try {
+    const resp = await fetch(`/api/photometry/${selectedPhoto}`);
+    if (!resp.ok) { card.hidden = true; selectedPhoto = null; return; }
+    j = await resp.json();
+  } catch (e) { return; }
+  if (photoSig(j) === lastPhotoSig) return;
+  lastPhotoSig = photoSig(j);
+  card.hidden = false;
+  $("pId").textContent = j.photometry_id;
+  const body = $("pBody");
+  const p = j.params;
+  let html =
+    `<p class="hint">状态:${esc(STATE_TEXT[j.state] || j.state)} · ` +
+    `文件:${esc(j.filename)} · 参数:x=${p.x}, y=${p.y}, ` +
+    `孔径 ${p.aperture_radius}, 背景环 ${p.bg_inner_radius}~${p.bg_outer_radius}, ` +
+    `允许位移 ${p.max_shift} 像素 · 提交:${fmtTime(j.created_at)}` +
+    (j.finished_at ? ` · 终结:${fmtTime(j.finished_at)}` : "") + `</p>`;
+
+  if (j.state === "running") {
+    body.innerHTML = html + `<p class="hint">正在读取帧并做孔径测光,请稍候……</p>`;
+    return;
+  }
+  if (j.state === "failed") {
+    body.innerHTML = html + `<div class="errbox">${esc(j.error || "未知错误")}</div>`;
+    return;
+  }
+
+  html +=
+    `<div class="metrics">` +
+    `<div class="metric"><div class="k">帧数</div>` +
+    `<div class="v">${j.n_frames}</div></div>` +
+    `<div class="metric"><div class="k">有效帧</div>` +
+    `<div class="v">${j.n_valid}</div></div>` +
+    `<div class="metric"><div class="k">坏帧</div>` +
+    `<div class="v">${j.n_bad}</div></div>` +
+    `<div class="metric"><div class="k">图像尺寸</div>` +
+    `<div class="v">${j.image_width} × ${j.image_height}</div></div>` +
+    `</div>`;
+
+  if (j.reason_counts && Object.keys(j.reason_counts).length) {
+    const labels = { target_lost: "目标丢失", two_positions: "两个可信位置",
+                     out_of_bounds: "孔径/背景环越界",
+                     neighbor_like: "疑似邻星" };
+    html += `<p class="hint">坏帧原因统计:` + Object.entries(j.reason_counts)
+      .map(([k, v]) => `${labels[k] || k} ${v} 帧`).join(" · ") + `</p>`;
+  }
+
+  if (j.sequence_available) {
+    html += `<div class="okbox">已生成 ${j.n_valid} 帧有效光变序列(time_day 为曝光中点,单位天;flux 为扣背景后的孔径通量)。</div>` +
+      `<p style="margin-top:12px;">` +
+      `<a class="download" href="/api/photometry/${j.photometry_id}/sequence.csv">下载 time_day、flux CSV</a></p>` +
+      `<h3>送入现有周期筛查</h3>` +
+      `<form id="sendPeriodForm" class="inline">` +
+      `<label>周期下限(天)<input type="number" name="period_min" step="any" min="0" value="1" required></label>` +
+      `<label>周期上限(天)<input type="number" name="period_max" step="any" min="0" value="6" required></label>` +
+      `<button type="submit">送入周期入口</button></form>` +
+      `<div id="sendMsg" style="margin-top:8px;font-size:13px;"></div>`;
+  } else {
+    html += `<div class="errbox">不提供光变序列:${esc(j.sequence_error || "有效帧不足或时刻重复")}</div>`;
+  }
+
+  html += `<h3>逐帧结果(按曝光中点排序)</h3>` +
+    `<p class="hint">鼠标悬停坏帧的「原因」可看完整说明,下方另有坏帧清单。</p>` +
+    `<div class="scroll"><table>` +
+    `<thead><tr><th>#</th><th>文件</th><th>time_day(中点)</th>` +
+    `<th>状态</th><th>x</th><th>y</th><th>flux</th><th>原因</th></tr></thead><tbody>`;
+  for (const f of j.frames) {
+    const reason = reasonText(f);
+    const title = f.reason ? ` title="${esc(f.reason)}"` : "";
+    html += `<tr><td>${f.index + 1}</td><td class="mono">${esc(f.filename)}</td>` +
+      `<td class="mono">${fmtNum(f.time_day, 6)}</td>` +
+      `<td><span class="badge st-${f.status}">${f.status === "ok" ? "可信" : "坏帧"}</span></td>` +
+      `<td>${fmtNum(f.x, 2)}</td><td>${fmtNum(f.y, 2)}</td>` +
+      `<td>${fmtNum(f.flux, 1)}</td>` +
+      `<td${title}>${esc(reason)}</td></tr>`;
+  }
+  html += `</tbody></table></div>`;
+
+  if (j.bad_frames && j.bad_frames.length) {
+    html += `<h3>坏帧清单(${j.bad_frames.length} 帧)</h3>` +
+      `<div class="scroll"><table><thead><tr><th>#</th><th>文件</th>` +
+      `<th>time_day(中点)</th><th>原因</th></tr></thead><tbody>`;
+    for (const f of j.bad_frames) {
+      html += `<tr><td>${f.index + 1}</td>` +
+        `<td class="mono">${esc(f.filename)}</td>` +
+        `<td class="mono">${fmtNum(f.time_day, 6)}</td>` +
+        `<td>${esc(f.reason || "未知原因")}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+  body.innerHTML = html;
+
+  const form = $("sendPeriodForm");
+  if (form) {
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(form);
+      const msg = $("sendMsg");
+      const resp = await fetch(
+        `/api/photometry/${j.photometry_id}/send-to-period`,
+        { method: "POST", body: fd });
+      if (!resp.ok) {
+        msg.className = "err-text";
+        msg.textContent = "送入失败:" + await parseError(resp);
+        return;
+      }
+      const out = await resp.json();
+      msg.className = "ok-text";
+      msg.textContent = `已送入周期筛查,批号 ${out.job_id}`;
+      selectedJob = out.job_id;
+      lastDetailSig = null;
+      refresh();
+    });
+  }
+}
+
+/* ---------------- 周期筛查(原有流程) ---------------- */
+
+const STATE_TEXT = { running: "计算中", done: "成功", failed: "失败",
+                     cancelled: "已取消" };
+
 async function submitFormData(fd) {
   const resp = await fetch("/api/jobs", { method: "POST", body: fd });
-  if (!resp.ok) { showMsg("提交失败:" + await parseError(resp), false); return; }
+  if (!resp.ok) { setMsg($("msg"), "提交失败:" + await parseError(resp), false); return; }
   const j = await resp.json();
-  showMsg("已受理,批号 " + j.job_id, true);
+  setMsg($("msg"), "已受理,批号 " + j.job_id, true);
   selectedJob = j.job_id;
   refresh();
 }
 
 $("submitForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const fd = new FormData(ev.target);
-  await submitFormData(fd);
+  await submitFormData(new FormData(ev.target));
 });
 
 $("sampleBtn").addEventListener("click", async () => {
   try {
     const r = await fetch("/api/sample.csv");
-    if (!r.ok) { showMsg("样例获取失败", false); return; }
+    if (!r.ok) { setMsg($("msg"), "样例获取失败", false); return; }
     const blob = await r.blob();
     const fd = new FormData();
     fd.append("file", new File([blob], "sample_star.csv", { type: "text/csv" }));
     fd.append("period_min", "2");
     fd.append("period_max", "10");
     await submitFormData(fd);
-  } catch (e) { showMsg("样例提交失败:" + e, false); }
+  } catch (e) { setMsg($("msg"), "样例提交失败:" + e, false); }
 });
-
-function fmtTime(ts) {
-  return ts ? new Date(ts * 1000).toLocaleString() : "—";
-}
-const STATE_TEXT = { running: "计算中", done: "成功", failed: "失败",
-                     cancelled: "已取消" };
 
 async function refresh() {
   let data;
@@ -203,8 +520,8 @@ async function refresh() {
 async function cancelJob(id) {
   const resp = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
   const j = await resp.json();
-  if (resp.ok) showMsg(`批 ${id}:${j.detail || j.state}`, true);
-  else showMsg(`取消失败:${j.detail || resp.status}`, false);
+  if (resp.ok) setMsg($("msg"), `批 ${id}:${j.detail || j.state}`, true);
+  else setMsg($("msg"), `取消失败:${j.detail || resp.status}`, false);
   refresh();
 }
 
@@ -257,8 +574,9 @@ async function renderDetail() {
   body.innerHTML = html;
 }
 
+refreshPhotometry();
 refresh();
-setInterval(refresh, 2000);
+setInterval(() => { refreshPhotometry(); refresh(); }, 2000);
 </script>
 </body>
 </html>
